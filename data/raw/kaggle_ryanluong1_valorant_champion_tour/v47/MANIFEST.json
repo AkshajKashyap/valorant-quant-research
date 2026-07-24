@@ -1,0 +1,17 @@
+{
+  "source": "Kaggle",
+  "dataset_ref": "ryanluong1/valorant-champion-tour-2021-2023-data",
+  "dataset_title_at_retrieval": "Valorant Champion Tour 2021-2026 Data",
+  "dataset_version": 47,
+  "source_last_updated_utc": "2026-06-26T06:01:26.74Z",
+  "retrieved_date_utc": "2026-07-23",
+  "retrieval_time_precision": "date_only",
+  "license": "MIT (as displayed by Kaggle metadata)",
+  "archive": {
+    "path": "dataset.zip",
+    "sha256": "b3982b1270c33f86473cf70d174d487a963e77c9e829f6820bb1602ac0339e93"
+  },
+  "extracted_files_root": "files",
+  "raw_file_count": 131,
+  "immutability_rule": "Do not modify this directory; create a new versioned snapshot instead."
+}
