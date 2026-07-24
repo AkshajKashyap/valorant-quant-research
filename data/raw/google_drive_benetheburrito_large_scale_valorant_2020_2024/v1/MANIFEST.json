@@ -1,0 +1,16 @@
+{
+  "source": "Public Google Drive file linked from Reddit post",
+  "source_post": "https://www.reddit.com/r/ValorantCompetitive/comments/1odnm63/large_scale_valorant_dataset_20202024/",
+  "drive_file_id": "1iiZGIPg4gzcy1FjqqDO5lXFsMhEXCVWb",
+  "file_name": "NewVLRDataRaw.csv",
+  "claimed_coverage": "2020 through September 2024",
+  "retrieved_date_utc": "2026-07-23",
+  "retrieval_time_precision": "date_only",
+  "license": "Not stated in the source post or file metadata inspected",
+  "file": {
+    "path": "files/NewVLRDataRaw.csv",
+    "sha256": "964f80759d2ec3660856349c9225e86e518284577c1e76fb6276992dd18dda67"
+  },
+  "raw_file_count": 1,
+  "immutability_rule": "Do not modify this directory; create a new versioned snapshot instead."
+}

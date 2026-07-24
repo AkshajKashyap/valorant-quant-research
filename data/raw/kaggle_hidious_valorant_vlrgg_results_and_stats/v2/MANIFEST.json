@@ -1,0 +1,17 @@
+{
+  "source": "Kaggle",
+  "dataset_ref": "hidious/valorant-vlrgg-results-and-stats",
+  "dataset_title_at_retrieval": "Valorant vlr.gg Results and Stats",
+  "dataset_version": 2,
+  "source_last_updated_utc": "2021-12-24T03:04:00.96Z",
+  "retrieved_date_utc": "2026-07-23",
+  "retrieval_time_precision": "date_only",
+  "license": "Data files © Original Authors (as displayed by Kaggle metadata)",
+  "archive": {
+    "path": "dataset.zip",
+    "sha256": "b968f02f4e4cc4bf833e4086f3ecab81abcd63552dea86305e1c3550d310cb88"
+  },
+  "extracted_files_root": "files",
+  "raw_file_count": 2,
+  "immutability_rule": "Do not modify this directory; create a new versioned snapshot instead."
+}
