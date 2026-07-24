@@ -3,6 +3,8 @@ import pytest
 
 from valorant_quant.elo import EloConfig, evaluate, run_elo, validate_canonical_matches, win_probability
 from valorant_quant.milestone2_5 import bootstrap_resample_dates, date_bootstrap, metrics, per_match_losses, run_robustness
+from valorant_quant.historical_features import build_historical_features
+from valorant_quant.milestone3 import _pipeline, fold_assignments, run_rolling
 
 
 def matches() -> pd.DataFrame:
@@ -86,6 +88,53 @@ def test_per_match_losses_reproduce_aggregate_metrics_and_k_runs_do_not_mutate_i
     assert metrics(losses)["elo_brier"] == pytest.approx(standard_metrics["test_2024"]["brier_score"])
     run_robustness(table)
     pd.testing.assert_frame_equal(table, original)
+
+
+def test_historical_features_are_prior_date_only_and_row_order_invariant() -> None:
+    table = matches().copy()
+    table.loc[2, ["team_b_id", "team_b_name"]] = ["b", "B"]
+    features = build_historical_features(table)
+    shuffled = build_historical_features(table.iloc[[1, 0, 2]].reset_index(drop=True))
+    pd.testing.assert_frame_equal(features, shuffled)
+    third = features.query("match_id == 'm3'").iloc[0]
+    assert third["last_5_win_rate_diff"] == pytest.approx(1.0)
+    assert third["days_since_last_match_diff"] == 0
+    assert features.query("match_id == 'm1'").iloc[0]["last_5_win_rate_diff"] == 0
+
+
+def test_unseen_history_is_neutral_and_folds_only_train_on_prior_dates() -> None:
+    table = matches().copy()
+    features = build_historical_features(table)
+    first = features.iloc[0]
+    assert first["last_5_win_rate_diff"] == 0
+    assert first["last_10_win_rate_diff"] == 0
+    assert first["any_missing_last_match_date"] == 1
+    table["match_date"] = ["2021-12-31", "2022-01-01", "2022-07-01"]
+    table["year"] = [2021, 2022, 2022]
+    for _, train, evaluation in fold_assignments(table):
+        if not evaluation.empty:
+            assert pd.to_datetime(train.match_date).max() < pd.to_datetime(evaluation.match_date).min()
+
+
+def test_out_of_fold_predictions_are_exactly_once_for_eligible_rows() -> None:
+    table = pd.concat([matches(), matches()], ignore_index=True)
+    table["match_id"] = [f"m{i}" for i in range(len(table))]
+    table["match_date"] = ["2021-01-01", "2021-01-02", "2021-01-03", "2022-01-01", "2022-01-02", "2022-01-03"]
+    table["year"] = [2021, 2021, 2021, 2022, 2022, 2022]
+    features = build_historical_features(table)
+    predictions, _, _ = run_rolling(features)
+    expected = features[pd.to_datetime(features.match_date).dt.year.ge(2022)].match_id
+    assert set(predictions.match_id) == set(expected)
+    assert not predictions.match_id.duplicated().any()
+
+
+def test_scaler_is_fit_on_training_rows_only() -> None:
+    train = pd.DataFrame({"elo_diff": [-10.0, 10.0], "team_a_won": [False, True]})
+    evaluation = pd.DataFrame({"elo_diff": [10000.0]})
+    pipeline = _pipeline()
+    pipeline.fit(train[["elo_diff"]], train.team_a_won)
+    assert pipeline.named_steps["scaler"].mean_[0] == pytest.approx(0.0)
+    assert pipeline.predict_proba(evaluation)[0, 1] > 0.5
     invalid = matches().copy()
     invalid["team_a_won"] = ["yes", "no", "yes"]
     with pytest.raises(ValueError, match="binary"):

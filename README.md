@@ -42,3 +42,6 @@ result, constraints, and outputs are in
 
 Milestone 2.5 stress-tested the Elo result and found weak, unstable 2024
 evidence. See [`docs/milestone_2_5_report.md`](docs/milestone_2_5_report.md).
+
+Milestone 3 found no incremental value from the pre-registered historical
+feature bundle. See [`docs/milestone_3_report.md`](docs/milestone_3_report.md).

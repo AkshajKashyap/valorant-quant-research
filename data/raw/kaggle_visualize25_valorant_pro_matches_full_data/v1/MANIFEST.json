@@ -1,0 +1,17 @@
+{
+  "source": "Kaggle",
+  "dataset_ref": "visualize25/valorant-pro-matches-full-data",
+  "dataset_title_at_retrieval": "Valorant Pro Matches - Full Data",
+  "dataset_version": 1,
+  "source_last_updated_utc": "2022-01-09T23:31:13.003Z",
+  "retrieved_date_utc": "2026-07-23",
+  "retrieval_time_precision": "date_only",
+  "license": "Unknown (as displayed by Kaggle metadata)",
+  "archive": {
+    "path": "dataset.zip",
+    "sha256": "3acbde52a1ba7207a8f7550339f364c5c8e9ddd9378a41d9c9acc57b1b72cfb0"
+  },
+  "extracted_files_root": "files",
+  "raw_file_count": 1,
+  "immutability_rule": "Do not modify this directory; create a new versioned snapshot instead."
+}
