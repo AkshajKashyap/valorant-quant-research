@@ -22,3 +22,7 @@ data/raw/*/*
 
 # Generated artifacts
 artifacts/
+
+# Downloaded raw datasets
+data/raw/**/files/
+data/raw/**/dataset.zip
