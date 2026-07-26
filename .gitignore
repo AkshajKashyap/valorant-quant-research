@@ -26,3 +26,6 @@ artifacts/
 # Downloaded raw datasets
 data/raw/**/files/
 data/raw/**/dataset.zip
+
+# Authenticated live-market pilot captures remain local and immutable.
+data/raw/market_pilot_live/

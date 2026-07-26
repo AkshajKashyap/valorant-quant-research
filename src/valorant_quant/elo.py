@@ -18,7 +18,7 @@ def win_probability(rating_a: float, rating_b: float, scale: float = DEFAULT_SCA
     return float(1.0 / (1.0 + 10.0 ** ((rating_b - rating_a) / scale)))
 
 
-def validate_canonical_matches(matches: pd.DataFrame) -> None:
+def validate_canonical_matches(matches: pd.DataFrame, *, allow_post_2024: bool = False) -> None:
     required = {
         "match_id", "match_date", "year", "team_a_id", "team_a_name",
         "team_b_id", "team_b_name", "team_a_won", "tournament_name",
@@ -32,7 +32,7 @@ def validate_canonical_matches(matches: pd.DataFrame) -> None:
     dates = pd.to_datetime(matches["match_date"], errors="coerce")
     if dates.isna().any() or dates.dt.year.eq(1970).any():
         raise ValueError("match_date must be valid and cannot use the 1970 placeholder")
-    if not dates.dt.year.isin([2021, 2022, 2023, 2024]).all():
+    if not allow_post_2024 and not dates.dt.year.isin([2021, 2022, 2023, 2024]).all():
         raise ValueError("Only 2021-2024 records are permitted")
     if matches[["team_a_id", "team_b_id", "team_a_name", "team_b_name"]].isna().any().any():
         raise ValueError("Both teams must be present")
@@ -52,9 +52,11 @@ class EloConfig:
     initial_rating: float = INITIAL_RATING
 
 
-def run_elo(matches: pd.DataFrame, config: EloConfig) -> tuple[pd.DataFrame, dict[str, float]]:
+def run_elo(
+    matches: pd.DataFrame, config: EloConfig, *, allow_post_2024: bool = False
+) -> tuple[pd.DataFrame, dict[str, float]]:
     """Run online Elo with strictly simultaneous updates inside each date."""
-    validate_canonical_matches(matches)
+    validate_canonical_matches(matches, allow_post_2024=allow_post_2024)
     frame = matches.copy()
     frame["match_date"] = pd.to_datetime(frame["match_date"])
     frame = frame.sort_values(["match_date", "match_id"], kind="stable")
