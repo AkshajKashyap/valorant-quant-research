@@ -71,3 +71,36 @@ def append_ledger_record(path: Path, record: dict[str, Any]) -> None:
         if record["record_id"] in existing: raise ValueError("Duplicate prospective record")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle: handle.write(serialized+"\n")
+
+
+def lifecycle(records: list[dict[str, Any]], match_id: str) -> set[str]:
+    return {r["record_type"] for r in records if str(r.get("pandascore_match_id")) == str(match_id)}
+
+
+def reschedule_requires_new_forecast(old_start: str, new_start: str) -> bool:
+    """Only a material move across calendar date can use a new D-1 state."""
+    return not primary_snapshot_current(old_start,new_start) and parse_utc(old_start).date()!=parse_utc(new_start).date()
+
+
+def primary_selection_record(candidates: list[dict[str, Any]], scheduled_start_utc: str, match_id: str) -> dict[str, Any] | None:
+    selected=select_primary_snapshot(candidates,scheduled_start_utc)
+    if not selected:return None
+    return {"record_id":f"primary:{match_id}:{selected['record_id']}","record_type":"primary_market_selected","pandascore_match_id":str(match_id),"candidate_record_id":selected["record_id"],"scheduled_start_utc":scheduled_start_utc}
+
+
+def terminal_or_outcome(match: dict[str, Any], forecast: dict[str, Any], observed_at_utc: str) -> dict[str, Any] | None:
+    """Classify PandaScore without changing any earlier ledger event."""
+    mid=str(forecast["pandascore_match_id"]); base={"pandascore_match_id":mid,"observed_at_utc":observed_at_utc}
+    teams=[x.get("opponent",{}) for x in match.get("opponents") or []]; ids={x.get("id") for x in teams}
+    if match.get("status") not in {"finished","canceled","cancelled","abandoned"} and not match.get("forfeit"):
+        return None
+    if match.get("status")=="finished" and not match.get("forfeit") and match.get("winner_id") in ids:
+        return base|{"record_id":f"outcome:{mid}","record_type":"outcome_attached","completion_status":"finished","winner_team_id":match["winner_id"],"team_a_won":match["winner_id"]==forecast["team_a_provider_id"],"forfeit":False}
+    reason="cancelled" if match.get("status") in {"canceled","cancelled"} else "forfeit_excluded" if match.get("forfeit") else "unresolved_or_invalid_result"
+    return base|{"record_id":f"terminal:{mid}:{reason}","record_type":"terminal_exclusion","terminal_status":match.get("status"),"reason":reason}
+
+
+def eligible_completed_count(records: list[dict[str, Any]]) -> int:
+    by_match={}
+    for r in records: by_match.setdefault(str(r.get("pandascore_match_id")),set()).add(r["record_type"])
+    return sum({"forecast_generated","primary_market_selected","outcome_attached"} <= types and "terminal_exclusion" not in types for types in by_match.values())
