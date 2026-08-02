@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 import json
+from urllib.error import HTTPError
+
+import pytest
 
 from valorant_quant import milestone6_runner as runner
 from valorant_quant.prospective import append_ledger_record, parse_utc
@@ -69,9 +72,13 @@ def test_runner_normal_lifecycle_is_idempotent(monkeypatch, tmp_path):
     event={"id":2,"home":"A","away":"B","date":"2026-07-26T13:00:00Z"}; odds={"bookmakers":{"Bet365":[{"name":"ML","updatedAt":"u","odds":[{"home":"2.0","away":"2.0"}]}]}}
     completed={**fixture,"status":"finished","forfeit":False,"winner_id":10}
     phase={"value":0}
+    match_urls=[]
     def fake(url, **kwargs):
-        if url.endswith('/1'): return completed if phase["value"]>=3 else fixture
         if "upcoming" in url:return [fixture] if phase["value"]<3 else []
+        if url.startswith("https://api.pandascore.co/"):
+            assert url=="https://api.pandascore.co/matches/1"
+            match_urls.append(url)
+            return completed if phase["value"]>=3 else fixture
         if "leagues" in url:return [{"name":"Valorant","slug":"v"}]
         if "events" in url:return [event]
         return odds
@@ -101,6 +108,7 @@ def test_runner_normal_lifecycle_is_idempotent(monkeypatch, tmp_path):
     assert next(x for x in rows if x["record_id"]==frozen_forecast["record_id"])==frozen_forecast
     assert next(x for x in rows if x["record_id"]==frozen_candidate["record_id"])==frozen_candidate
     assert runner.eligible_completed_count(rows)==1
+    assert match_urls==["https://api.pandascore.co/matches/1"]
     before=runner.LEDGER.read_text()
     before_counts={kind:sum(r["record_type"]==kind for r in rows) for kind in (
         "forecast_generated","market_candidate","primary_market_selected","reschedule",
@@ -109,6 +117,48 @@ def test_runner_normal_lifecycle_is_idempotent(monkeypatch, tmp_path):
     assert runner.LEDGER.read_text()==before
     after=ledger_rows(runner.LEDGER)
     assert {kind:sum(r["record_type"]==kind for r in after) for kind in before_counts}==before_counts
+    assert match_urls==["https://api.pandascore.co/matches/1"]
+
+
+@pytest.mark.parametrize(("failure_status","failure_kind"),[(404,"not_found"),(429,"retryable"),(500,"retryable"),(422,"unexpected")])
+def test_outcome_lookup_failure_isolated_while_another_fixture_progresses(monkeypatch, tmp_path, failure_status, failure_kind):
+    configure(monkeypatch,tmp_path)
+    start="2026-07-26T13:00:00Z"
+    first=forecast(start,match_id="1"); second=forecast(start,match_id="2")
+    for record in (first,second): append_ledger_record(runner.LEDGER,record)
+    requested=[]
+    completed=fixture(start,match_id=2,status="finished",winner_id=10)
+    def fake(url,**kwargs):
+        if "upcoming" in url:return []
+        requested.append(url)
+        if url=="https://api.pandascore.co/matches/1":
+            raise HTTPError(url,failure_status,"lookup failed",None,None)
+        if url=="https://api.pandascore.co/matches/2":return completed
+        pytest.fail(f"unexpected PandaScore URL: {url}")
+    monkeypatch.setattr(runner,"get_json",fake)
+    result=runner.run_once(now=datetime(2026,7,26,14,tzinfo=timezone.utc))
+    assert requested==["https://api.pandascore.co/matches/1","https://api.pandascore.co/matches/2"]
+    assert result["outcome_lookup_failures"]==[{"pandascore_match_id":"1","http_status":failure_status,"kind":failure_kind}]
+    state=ledger_rows(runner.LEDGER)
+    assert any(r["record_id"]=="outcome:2" for r in state)
+    assert not any(r.get("record_id")=="outcome:1" or str(r.get("pandascore_match_id"))=="1" and r["record_type"]=="terminal_exclusion" for r in state)
+    before=runner.LEDGER.read_text()
+    runner.run_once(now=datetime(2026,7,26,14,1,tzinfo=timezone.utc))
+    assert runner.LEDGER.read_text()==before
+
+
+@pytest.mark.parametrize("failure_status",[401,403])
+def test_outcome_lookup_access_failure_aborts_run(monkeypatch, tmp_path, failure_status):
+    configure(monkeypatch,tmp_path)
+    start="2026-07-26T13:00:00Z"; append_ledger_record(runner.LEDGER,forecast(start))
+    def fake(url,**kwargs):
+        if "upcoming" in url:return []
+        assert url=="https://api.pandascore.co/matches/1"
+        raise HTTPError(url,failure_status,"access denied",None,None)
+    monkeypatch.setattr(runner,"get_json",fake)
+    with pytest.raises(HTTPError) as captured:
+        runner.run_once(now=datetime(2026,7,26,14,tzinfo=timezone.utc))
+    assert captured.value.code==failure_status
 
 
 def test_runner_same_date_material_reschedule_preserves_forecast(monkeypatch, tmp_path):

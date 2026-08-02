@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse, hashlib, json, os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import pandas as pd
@@ -42,9 +44,9 @@ def read_ledger(path: Path | None=None) -> list[dict]:
     path = path or LEDGER
     return [json.loads(line) for line in path.read_text().splitlines() if line] if path.exists() else []
 
-def run_once(*, dry_run: bool=False, now: datetime | None=None) -> dict[str,int]:
+def run_once(*, dry_run: bool=False, now: datetime | None=None) -> dict[str,Any]:
     panda,odds=load_credentials(); now=now or datetime.now(timezone.utc); now_s=now.isoformat().replace("+00:00","Z")
-    ledger=read_ledger(); existing={r["record_id"] for r in ledger}; actions=[]
+    ledger=read_ledger(); existing={r["record_id"] for r in ledger}; actions=[]; outcome_lookup_failures=[]
     fixtures=get_json("https://api.pandascore.co/valorant/matches/upcoming",headers={"Authorization":f"Bearer {panda}"},query={"per_page":"100"})
     candidates=[]
     for x in fixtures:
@@ -92,7 +94,14 @@ def run_once(*, dry_run: bool=False, now: datetime | None=None) -> dict[str,int]
         ]
         effective_start=schedule_updates[-1] if schedule_updates else forecast["scheduled_start_utc"]
         if now >= __import__('valorant_quant.prospective',fromlist=['parse_utc']).parse_utc(effective_start):
-            result=get_json(f"https://api.pandascore.co/valorant/matches/{mid}",headers={"Authorization":f"Bearer {panda}"})
+            match_url=f"https://api.pandascore.co/matches/{mid}"
+            try:
+                result=get_json(match_url,headers={"Authorization":f"Bearer {panda}"})
+            except HTTPError as error:
+                if error.code in {401,403}: raise
+                kind="not_found" if error.code==404 else "retryable" if error.code==429 or error.code>=500 else "unexpected"
+                outcome_lookup_failures.append({"pandascore_match_id":mid,"http_status":error.code,"kind":kind})
+                continue
             action=terminal_or_outcome(result,forecast,now_s)
             if action and action["record_id"] not in existing: actions.append((action,None)); existing.add(action["record_id"])
     if candidates:
@@ -153,7 +162,7 @@ def run_once(*, dry_run: bool=False, now: datetime | None=None) -> dict[str,int]
             try: append_ledger_record(LEDGER,record)
             except ValueError as error:
                 if "Duplicate prospective record" not in str(error): raise
-    return {"fixtures_discovered":len(fixtures),"window_candidates":len(candidates),"records_appended":0 if dry_run else len(actions),"would_append":len(actions) if dry_run else 0,"action_types":[record["record_type"] for record,_ in actions]}
+    return {"fixtures_discovered":len(fixtures),"window_candidates":len(candidates),"records_appended":0 if dry_run else len(actions),"would_append":len(actions) if dry_run else 0,"action_types":[record["record_type"] for record,_ in actions],"outcome_lookup_failures":outcome_lookup_failures}
 
 def status() -> dict[str,int]:
     rows=read_ledger(); return {"target":30,"forecasts_frozen":sum(r["record_type"]=="forecast_generated" for r in rows),"primary_snapshots":sum(r["record_type"]=="primary_market_selected" for r in rows),"outcomes_attached":sum(r["record_type"]=="outcome_attached" for r in rows),"candidate_snapshots":sum(r["record_type"]=="market_candidate" for r in rows),"eligible_completed":eligible_completed_count(rows),"reschedules":sum(r["record_type"]=="reschedule" for r in rows),"superseded_forecasts":sum(r["record_type"]=="forecast_superseded" for r in rows),"superseded_primaries":sum(r["record_type"]=="primary_market_superseded" for r in rows),"terminal_exclusions":sum(r["record_type"]=="terminal_exclusion" for r in rows)}
