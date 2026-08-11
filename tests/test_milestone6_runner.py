@@ -333,7 +333,7 @@ def test_status_is_operational_only_with_completed_records(monkeypatch, tmp_path
     configure(monkeypatch,tmp_path)
     start="2026-07-26T13:00:00Z"; frozen=forecast(start); stored=candidate(start,"2026-07-26T12:00:00Z")
     records=(frozen,stored,primary(start,stored["record_id"]),
-             {"record_id":"outcome:1","record_type":"outcome_attached","pandascore_match_id":"1","team_a_won":True},
+                 {"record_id":"outcome:1","record_type":"outcome_attached","pandascore_match_id":"1","completion_status":"finished","forfeit":False,"team_a_won":True},
              {"record_id":"reschedule:2:x","record_type":"reschedule","pandascore_match_id":"2"},
              {"record_id":"terminal:3:cancelled","record_type":"terminal_exclusion","pandascore_match_id":"3","reason":"cancelled"})
     for record in records: append_ledger_record(runner.LEDGER,record)

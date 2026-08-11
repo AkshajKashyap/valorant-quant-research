@@ -101,6 +101,66 @@ def terminal_or_outcome(match: dict[str, Any], forecast: dict[str, Any], observe
 
 
 def eligible_completed_count(records: list[dict[str, Any]]) -> int:
-    by_match={}
-    for r in records: by_match.setdefault(str(r.get("pandascore_match_id")),set()).add(r["record_type"])
-    return sum({"forecast_generated","primary_market_selected","outcome_attached"} <= types and "terminal_exclusion" not in types for types in by_match.values())
+    """Count strictly eligible completed fixtures from the append-only ledger."""
+    return len(reconstruct_eligible_completed_matches(records))
+
+
+def reconstruct_eligible_completed_matches(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return active lifecycle components for every strictly eligible fixture.
+
+    This is deliberately limited to ledger validity and does not calculate any
+    forecasting performance. It is shared by operational status and the
+    evaluator so a superseded primary cannot inflate the operational count.
+    """
+    superseded_forecasts={
+        str(record["forecast_record_id"])
+        for record in records
+        if record.get("record_type")=="forecast_superseded" and record.get("forecast_record_id") is not None
+    }
+    superseded_primaries={
+        str(record["primary_record_id"])
+        for record in records
+        if record.get("record_type")=="primary_market_superseded" and record.get("primary_record_id") is not None
+    }
+    by_match: dict[str,list[tuple[int,dict[str,Any]]]]={}
+    for position,record in enumerate(records):
+        if record.get("pandascore_match_id") is not None:
+            by_match.setdefault(str(record["pandascore_match_id"]),[]).append((position,record))
+    eligible=[]
+    for match_id,events in by_match.items():
+        event_rows=[record for _,record in events]
+        if any(record.get("record_type")=="terminal_exclusion" for record in event_rows):
+            continue
+        forecasts=[
+            (position,record) for position,record in events
+            if record.get("record_type")=="forecast_generated" and str(record.get("record_id")) not in superseded_forecasts
+        ]
+        primaries=[
+            record for _,record in events
+            if record.get("record_type")=="primary_market_selected" and str(record.get("record_id")) not in superseded_primaries
+        ]
+        outcomes=[
+            record for _,record in events
+            if record.get("record_type")=="outcome_attached" and record.get("completion_status")=="finished"
+            and record.get("forfeit") is False and isinstance(record.get("team_a_won"),bool)
+        ]
+        if len(forecasts)!=1 or len(primaries)!=1 or len(outcomes)!=1:
+            continue
+        forecast_position,forecast=forecasts[0]
+        primary=primaries[0]
+        candidates=[record for _,record in events if record.get("record_id")==primary.get("candidate_record_id")]
+        if len(candidates)!=1:
+            continue
+        candidate=candidates[0]
+        try:
+            odds_a,odds_b=float(candidate["team_a_decimal_odds"]),float(candidate["team_b_decimal_odds"])
+            scheduled_start=str(primary["scheduled_start_utc"])
+            lead=lead_time_minutes(str(candidate["captured_at_utc"]),scheduled_start)
+            valid=(candidate.get("bookmaker")==PRIMARY_BOOKMAKER and candidate.get("market_type")=="ML"
+                   and odds_a>1 and odds_b>1 and candidate.get("scheduled_start_utc")==scheduled_start
+                   and MIN_LEAD_MINUTES<=lead<=MAX_LEAD_MINUTES)
+        except (KeyError,TypeError,ValueError):
+            valid=False
+        if valid:
+            eligible.append({"pandascore_match_id":match_id,"forecast":forecast,"primary":primary,"candidate":candidate,"outcome":outcomes[0],"forecast_ledger_position":forecast_position})
+    return sorted(eligible,key=lambda row:(row["primary"]["scheduled_start_utc"],row["forecast_ledger_position"],row["pandascore_match_id"]))
