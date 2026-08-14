@@ -122,3 +122,60 @@ def test_evaluation_is_read_only_for_ledger_and_report_stays_exploratory(tmp_pat
     assert "EXPLORATORY EARLY LOOK" in report.read_text(encoding="utf-8")
     with pytest.raises(ValueError, match="below 30"):
         evaluation.run_evaluation(checkpoint=2, exploratory=False, ledger_path=ledger)
+
+
+def test_checkpoint_100_uses_first_100_strict_eligible_matches(tmp_path, monkeypatch):
+    ledger = tmp_path / "ledger.jsonl"
+    records = []
+    for index in range(101):
+        records.extend(match_records(f"match-{index:03}", "2026-08-01T12:00:00Z"))
+    ledger.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    monkeypatch.setattr(evaluation, "ARTIFACTS", tmp_path / "artifacts")
+    monkeypatch.setattr(evaluation, "REPORTS", tmp_path / "reports")
+
+    dataset, report, _ = evaluation.run_evaluation(checkpoint=100, exploratory=False, ledger_path=ledger)
+    frozen = json.loads(dataset.read_text(encoding="utf-8"))["rows"]
+    assert [row["pandascore_match_id"] for row in frozen] == [f"match-{index:03}" for index in range(100)]
+    assert "DESCRIPTIVE CHECKPOINT: 100" in report.read_text(encoding="utf-8")
+
+
+def test_checkpoint_100_refuses_when_fewer_strict_matches_exist(tmp_path):
+    ledger = tmp_path / "ledger.jsonl"
+    records = []
+    for index in range(99):
+        records.extend(match_records(f"match-{index:03}", "2026-08-01T12:00:00Z"))
+    ledger.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+
+    with pytest.raises(evaluation.InsufficientEligibleMatchesError, match="checkpoint 100 requires 100"):
+        evaluation.run_evaluation(checkpoint=100, exploratory=False, ledger_path=ledger)
+
+
+def neutral_forecast(match_id, *, elo_a, elo_b, prior_a, prior_b, probability=.5):
+    return {
+        "record_id": f"forecast:{match_id}", "record_type": "forecast_generated", "pandascore_match_id": match_id,
+        "scheduled_start_utc": "2026-08-01T12:00:00Z", "team_a": f"A-{match_id}", "team_b": f"B-{match_id}",
+        "p_team_a_wins": probability, "elo_a": elo_a, "elo_b": elo_b,
+        "team_a_prior_eligible_matches": prior_a, "team_b_prior_eligible_matches": prior_b,
+        "team_a_identity": f"ps:a-{match_id}", "team_b_identity": f"ps:b-{match_id}",
+    }
+
+
+def test_neutral_diagnostic_is_pre_match_only_and_classifies_reasons(tmp_path):
+    initial = neutral_forecast("initial", elo_a=1500, elo_b=1500, prior_a=0, prior_b=0)
+    equal = neutral_forecast("equal", elo_a=1600, elo_b=1600, prior_a=4, prior_b=5)
+    other = neutral_forecast("other", elo_a=1500, elo_b=1499, prior_a=0, prior_b=2)
+    stale = neutral_forecast("stale", elo_a=1500, elo_b=1500, prior_a=0, prior_b=0)
+    records = [initial, equal, other, stale, {"record_id": "outcome:initial", "record_type": "outcome_attached", "pandascore_match_id": "initial", "team_a_won": True}, {"record_id": "forecast-superseded:stale", "record_type": "forecast_superseded", "pandascore_match_id": "stale", "forecast_record_id": "forecast:stale"}]
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    before = ledger.read_text(encoding="utf-8")
+
+    report, rows = evaluation.write_neutral_forecast_diagnostic(ledger_path=ledger, report_path=tmp_path / "neutral.md")
+    assert ledger.read_text(encoding="utf-8") == before
+    assert [row["neutral_reason"] for row in rows] == ["both teams at initial 1500", "equal non-initial ratings", "some other deterministic reason"]
+    assert rows[0]["team_a_true_cold_start"] and rows[0]["team_b_true_cold_start"]
+    assert not rows[1]["team_a_true_cold_start"] and not rows[1]["team_b_true_cold_start"]
+    assert rows[2]["team_a_true_cold_start"] and not rows[2]["team_b_true_cold_start"]
+    banned = {"team_a_won", "outcome", "winner", "bet365", "market", "profit", "p_team_a_wins"}
+    assert not banned & set().union(*(set(row) for row in rows))
+    assert not any(word in report.read_text(encoding="utf-8").casefold() for word in ("outcome", "winner", "bet365", "market", "profit"))

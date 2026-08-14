@@ -15,7 +15,7 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any, Iterable
 
-from valorant_quant.prospective import reconstruct_eligible_completed_matches
+from valorant_quant.prospective import reconstruct_eligible_completed_matches, true_cold_start
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +26,7 @@ BOOTSTRAP_SEED = 20260811
 BOOTSTRAP_REPLICATES = 10_000
 EPSILON = 1e-15
 ACCURACY_TIE_RULE = "no_directional_prediction_excluded"
+NEUTRAL_DIAGNOSTIC_PATH = REPORTS / "milestone_6_neutral_forecast_diagnostic.md"
 
 
 class InsufficientEligibleMatchesError(ValueError):
@@ -41,6 +42,78 @@ def load_ledger(path: Path = LEDGER) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def neutral_forecast_reason(forecast: dict[str, Any]) -> str:
+    """Classify an exact-neutral Elo forecast using only frozen pre-match state."""
+    rating_a, rating_b = float(forecast["elo_a"]), float(forecast["elo_b"])
+    if rating_a == rating_b == 1500.0:
+        return "both teams at initial 1500"
+    if rating_a == rating_b:
+        return "equal non-initial ratings"
+    return "some other deterministic reason"
+
+
+def neutral_forecast_diagnostic(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reconstruct active exact-0.5 forecasts without reading result or market fields."""
+    superseded = {
+        str(record["forecast_record_id"])
+        for record in records
+        if record.get("record_type") == "forecast_superseded" and record.get("forecast_record_id") is not None
+    }
+    rows = []
+    for position, forecast in enumerate(records):
+        if forecast.get("record_type") != "forecast_generated" or str(forecast.get("record_id")) in superseded:
+            continue
+        try:
+            if float(forecast["p_team_a_wins"]) != 0.5:
+                continue
+            prior_a, prior_b = int(forecast["team_a_prior_eligible_matches"]), int(forecast["team_b_prior_eligible_matches"])
+            row = {
+                "pandascore_match_id": str(forecast["pandascore_match_id"]),
+                "team_a": forecast["team_a"], "team_b": forecast["team_b"],
+                "scheduled_start_utc": forecast["scheduled_start_utc"],
+                "elo_a": float(forecast["elo_a"]), "elo_b": float(forecast["elo_b"]),
+                "team_a_prior_eligible_matches": prior_a, "team_b_prior_eligible_matches": prior_b,
+                "team_a_identity": forecast["team_a_identity"], "team_b_identity": forecast["team_b_identity"],
+                "team_a_true_cold_start": true_cold_start(prior_a),
+                "team_b_true_cold_start": true_cold_start(prior_b),
+                "neutral_reason": neutral_forecast_reason(forecast),
+                "_ledger_position": position,
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append(row)
+    return sorted(rows, key=lambda row: (row["scheduled_start_utc"], row["_ledger_position"], row["pandascore_match_id"]))
+
+
+def _neutral_diagnostic_markdown(rows: list[dict[str, Any]]) -> str:
+    counts = {reason: sum(row["neutral_reason"] == reason for row in rows) for reason in (
+        "both teams at initial 1500", "equal non-initial ratings", "some other deterministic reason",
+    )}
+    lines = [
+        "# Milestone 6 neutral Elo forecast diagnostic", "",
+        "This diagnostic contains only frozen pre-match state for active exact-0.5 Elo forecasts.", "",
+        "## Summary", "",
+        "| Reason | Forecasts |", "| --- | ---: |",
+        *[f"| {reason} | {count} |" for reason, count in counts.items()], "",
+        "## Forecasts", "",
+        "| PandaScore match ID | Team A | Team B | Scheduled start UTC | Elo A | Elo B | A prior eligible matches | B prior eligible matches | Team A identity | Team B identity | A true cold start | B true cold start | Deterministic reason |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- |",
+    ]
+    for row in rows:
+        lines.append(
+            f"| {row['pandascore_match_id']} | {row['team_a']} | {row['team_b']} | {row['scheduled_start_utc']} | {row['elo_a']:.1f} | {row['elo_b']:.1f} | {row['team_a_prior_eligible_matches']} | {row['team_b_prior_eligible_matches']} | {row['team_a_identity']} | {row['team_b_identity']} | {row['team_a_true_cold_start']} | {row['team_b_true_cold_start']} | {row['neutral_reason']} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def write_neutral_forecast_diagnostic(*, ledger_path: Path = LEDGER, report_path: Path = NEUTRAL_DIAGNOSTIC_PATH) -> tuple[Path, list[dict[str, Any]]]:
+    """Write the read-only neutral-forecast diagnostic, never touching the ledger."""
+    rows = neutral_forecast_diagnostic(load_ledger(ledger_path))
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(_neutral_diagnostic_markdown(rows), encoding="utf-8")
+    return report_path, rows
 
 
 def no_vig_probabilities(odds_a: float, odds_b: float) -> tuple[float, float]:
@@ -256,13 +329,13 @@ def _format_number(value: float | None, digits: int = 4) -> str:
 
 
 def _report_markdown(checkpoint: int, exploratory: bool, rows: list[dict[str, Any]], result: dict[str, Any]) -> str:
-    label = "EXPLORATORY EARLY LOOK" if exploratory else "PREREGISTERED 30-MATCH CHECKPOINT"
+    label = "EXPLORATORY EARLY LOOK" if exploratory else "PREREGISTERED 30-MATCH CHECKPOINT" if checkpoint == 30 else "DESCRIPTIVE CHECKPOINT"
     elo, market = result["elo"], result["market"]
     paired_ll, paired_bs = result["paired_log_loss"], result["paired_brier"]
     lines = [
         f"# Milestone 6 {label}: {checkpoint} eligible completed matches", "",
         f"> **Exploratory-status warning:** This {checkpoint}-match analysis was requested before the preregistered 30-match checkpoint, is exploratory only, and cannot justify model or protocol changes."
-        if exploratory else "> This is the separate preregistered 30-match checkpoint.", "",
+        if exploratory else "> This is the separate preregistered 30-match checkpoint." if checkpoint == 30 else "> This is a separate descriptive checkpoint using the same frozen evaluation procedure.", "",
         "## 1. Sample construction", "",
         "The sample is the first eligible completed fixtures ordered mechanically by scheduled-start UTC, active-forecast ledger position, and PandaScore match ID. No outcome, forecast, odds, or performance field is used to select fixtures.", "",
         "PandaScore IDs: " + ", ".join(row["pandascore_match_id"] for row in rows) + ".", "",
@@ -301,8 +374,9 @@ def _report_markdown(checkpoint: int, exploratory: bool, rows: list[dict[str, An
     lines.extend([
         "", "## 8. Major limitations", "",
         f"This is a descriptive {len(rows)}-fixture comparison with very high uncertainty. It makes no statistical-significance, market-inefficiency, betting-edge, profitability, or production-readiness claim. No post-hoc subset is selected.", "",
-        "## 9. What happens at 30 matches", "",
-        "The collector continues unchanged. When 30 eligible completed fixtures exist, run `python -m valorant_quant.milestone6_evaluation --checkpoint 30`; it freezes the first 30 in the same ordering and writes a separate report without overwriting this early look.", "",
+        "## 9. Next checkpoint", "",
+        "The preregistered 30-match checkpoint is complete. The collector continues unchanged. The next larger descriptive checkpoint will use 100 strictly eligible completed matches; no model or protocol changes will be made before that checkpoint."
+        if checkpoint == 30 else "The collector continues unchanged. This report is descriptive and does not alter the model or protocol.", "",
     ])
     return "\n".join(lines)
 
@@ -327,9 +401,18 @@ def run_evaluation(*, checkpoint: int, exploratory: bool, ledger_path: Path = LE
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a frozen Milestone 6 prospective checkpoint.")
-    parser.add_argument("--checkpoint", type=int, required=True)
+    parser.add_argument("--checkpoint", type=int)
     parser.add_argument("--exploratory", action="store_true")
+    parser.add_argument("--neutral-forecast-diagnostic", action="store_true")
     args = parser.parse_args()
+    if args.neutral_forecast_diagnostic:
+        if args.checkpoint is not None or args.exploratory:
+            parser.error("--neutral-forecast-diagnostic cannot be combined with checkpoint evaluation arguments")
+        report, rows = write_neutral_forecast_diagnostic()
+        print(json.dumps({"report": str(report), "neutral_forecasts": len(rows)}, sort_keys=True))
+        return
+    if args.checkpoint is None:
+        parser.error("--checkpoint is required unless --neutral-forecast-diagnostic is used")
     try:
         dataset, report, _ = run_evaluation(checkpoint=args.checkpoint, exploratory=args.exploratory)
     except (InsufficientEligibleMatchesError, ValueError, FileNotFoundError) as error:
