@@ -120,7 +120,8 @@ Transport = Callable[[str, dict[str, str], dict[str, str]], HttpResponse]
 Clock = Callable[[], datetime]
 
 
-def _default_transport(url: str, headers: dict[str, str], query: dict[str, str]) -> HttpResponse:
+def pandascore_http_transport(url: str, headers: dict[str, str], query: dict[str, str]) -> HttpResponse:
+    """Perform one PandaScore request; callers may wrap this for bounded retries."""
     address = url + "?" + urlencode(query)
     with urlopen(Request(address, headers=headers), timeout=45) as response:
         return HttpResponse(json.loads(response.read()), dict(response.headers.items()))
@@ -149,7 +150,7 @@ class PandaScoreCompletedClient:
         self,
         token: str,
         *,
-        transport: Transport = _default_transport,
+        transport: Transport = pandascore_http_transport,
         clock: Clock = lambda: datetime.now(timezone.utc),
     ) -> None:
         if not token:
@@ -531,7 +532,13 @@ def require_coverage_for_forecast(
     generated_at_utc: str,
 ) -> dict[str, Any]:
     generated = parse_utc(generated_at_utc)
-    required_end = datetime.combine(parse_utc(fixture.scheduled_start_utc).date(), datetime.min.time(), tzinfo=timezone.utc)
+    # Before midnight on D-1, a poll can only cover information through the
+    # actual generation time.  Once D begins, the D-1 boundary is sufficient.
+    # Taking the minimum supports both cases without claiming future coverage.
+    fixture_midnight = datetime.combine(
+        parse_utc(fixture.scheduled_start_utc).date(), datetime.min.time(), tzinfo=timezone.utc
+    )
+    required_end = min(generated, fixture_midnight)
     polls = [
         record for record in records
         if record.get("record_type") == "v2_results_poll_completed"
@@ -674,7 +681,7 @@ def live_feasibility_check(*, now: datetime | None = None) -> dict[str, Any]:
     result = inspect_source_feasibility(bundle, known_reference_match_ids=known_ids)
     missing_details = []
     for match_id in result["known_v1_outcome_ids_missing"]:
-        response = _default_transport(
+        response = pandascore_http_transport(
             f"https://api.pandascore.co/matches/{match_id}",
             {"Authorization": f"Bearer {token}"},
             {},

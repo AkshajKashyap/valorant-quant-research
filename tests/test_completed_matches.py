@@ -189,6 +189,21 @@ def test_source_gap_blocks_forecast_when_fixed_boundary_poll_is_missing():
         require_coverage_for_forecast([], fixture=target, generated_at_utc="2026-08-03T10:00:00Z")
 
 
+def test_poll_through_generation_is_sufficient_before_fixture_date_midnight():
+    target = Fixture("tomorrow", "2026-08-04T00:30:00Z", "1", "A", "2", "B")
+    poll = {
+        "record_id": "v2_results_poll:test",
+        "record_type": "v2_results_poll_completed",
+        "query_begin_at_utc": INCREMENTAL_BEGIN_AT_UTC,
+        "query_end_at_utc": "2026-08-03T23:00:01Z",
+        "poll_completed_at_utc": "2026-08-03T23:00:01Z",
+        "normalization_failures": [],
+    }
+    assert require_coverage_for_forecast(
+        [poll], fixture=target, generated_at_utc="2026-08-03T23:00:01Z"
+    )["record_id"] == "v2_results_poll:test"
+
+
 def test_boundary_overlap_is_audited_but_cannot_duplicate_base_elo_update(tmp_path):
     ledger, raw = tmp_path / "results.jsonl", tmp_path / "raw"
     overlap = source_match(19, match_date="2026-07-25")
